@@ -12,6 +12,7 @@
 - 通过 Markdown 文件管理系统提示词
 - 为每个企业微信用户自动维护一个 `<User>-Identity.md` 身份档案
 - 集成开源 `weather-cn` skill，可根据问题直接查询中国城市天气
+- 支持自然语言创建定时提醒定义，并定时通知指定用户
 
 ## 项目结构
 
@@ -20,8 +21,10 @@ app/
   agent.py         OpenAI-compatible Agent 调用
   crypto.py        企业微信回调消息验签与 AES 加解密
   dedupe.py        短期消息去重
+  definition_manager.py 定时提醒定义管理与调度
   identity.py      用户身份档案读写与提取
   main.py          FastAPI 入口
+  reminder_parser.py 自然语言提醒定义解析
   weather_skill.py 天气 skill 适配层
 identities/        自动生成的用户身份档案
 skills/
@@ -40,9 +43,10 @@ scripts/
 3. 解析消息内容并用 `MsgId` 去重
 4. 立即返回 `success`，避免企业微信回调超时
 5. 更新用户身份档案与会话记忆
-6. 如果命中天气问题，直接调用本地天气 skill
-7. 否则异步调用模型生成回复
-8. 调用企业微信 `message/send` 主动把回复发给用户
+6. 如果命中提醒定义请求，创建定时任务并回复确认
+7. 如果命中天气问题，直接调用本地天气 skill
+8. 否则异步调用模型生成回复
+9. 调用企业微信 `message/send` 主动把回复发给用户
 
 ## 环境变量
 
@@ -81,6 +85,12 @@ scripts/
 ### 用户身份档案配置
 
 - `IDENTITY_DIR`: 用户身份档案目录，默认 `/app/identities`
+
+### 提醒定义配置
+
+- `DEFINITION_DB_PATH`: 提醒定义 SQLite 数据库路径，默认 `/app/data/definitions.db`
+- `DEFINITION_POLL_INTERVAL_SECONDS`: 后台轮询触发间隔，默认 `10`
+- `APP_TIMEZONE`: 自然语言时间解释时区，默认 `Asia/Shanghai`
 
 ### 天气 Skill 配置
 
@@ -185,7 +195,7 @@ curl http://127.0.0.1:8000/healthz
 示例返回：
 
 ```json
-{"status":"ok","agent_configured":"true","wecom_api_configured":"true","weather_skill_configured":"true"}
+{"status":"ok","agent_configured":"true","wecom_api_configured":"true","definition_manager_configured":"true","weather_skill_configured":"true"}
 ```
 
 ## 注意事项
@@ -199,3 +209,5 @@ curl http://127.0.0.1:8000/healthz
 - 身份档案只保存“用户明确自述”的事实，例如姓名、公司、职位、城市、学校；模糊推断不会写入档案。
 - 每个用户会生成一个 `identities/<User>-Identity.md` 文件，并在回复时作为身份上下文注入给模型。
 - 天气问题会优先走 `skills/weather-cn/weather-cn.sh`，不消耗大模型调用。
+- 目前已支持类似“明天2点提醒我喝水”“每隔10分钟提醒我看消息”的提醒定义。
+- 当前提醒定义持久化到 SQLite，适合单实例；如果后面要多实例并发，建议迁移到 Redis 或数据库队列。

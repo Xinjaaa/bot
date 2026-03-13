@@ -2,14 +2,19 @@ import logging
 import os
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 
 from app.agent import AgentError, OpenAIAgent, is_agent_configured
 from app.crypto import WeComCrypto, WeComCryptoError
 from app.dedupe import TTLMessageDeduper
+from app.definition_manager import DefinitionManager, ReminderDefinition
 from app.identity import UserIdentityStore
 from app.memory import InMemoryConversationStore
+from app.reminder_parser import ReminderDefinitionParser
+from app.skill_router import SkillRouter
 from app.weather_skill import WeatherSkill, WeatherSkillError, is_weather_skill_configured
 from app.wecom_api import WeComAPIClient, WeComAPIError, is_wecom_api_configured
 
@@ -44,19 +49,24 @@ conversation_store = InMemoryConversationStore(
 )
 identity_store = UserIdentityStore()
 weather_skill: WeatherSkill | None = WeatherSkill() if is_weather_skill_configured() else None
+reminder_parser = ReminderDefinitionParser()
+definition_manager: DefinitionManager | None = None
+skill_router = SkillRouter()
 
 app = FastAPI(title="WeCom Callback Service")
 
 logger.info(
-    "service startup corp_id=%s agent_configured=%s wecom_api_configured=%s weather_skill_configured=%s memory_enabled=%s memory_max_turns=%s memory_ttl_seconds=%s identity_dir=%s log_level=%s dedupe_ttl_seconds=%s",
+    "service startup corp_id=%s agent_configured=%s wecom_api_configured=%s weather_skill_configured=%s skill_router_skills=%s memory_enabled=%s memory_max_turns=%s memory_ttl_seconds=%s identity_dir=%s definition_db_path=%s log_level=%s dedupe_ttl_seconds=%s",
     CORP_ID,
     bool(agent),
     bool(wecom_api),
     bool(weather_skill),
+    [skill.name for skill in skill_router.skills],
     memory_enabled,
     os.getenv("MEMORY_MAX_TURNS", "6"),
     os.getenv("MEMORY_TTL_SECONDS", "1800"),
     os.getenv("IDENTITY_DIR", "/app/identities"),
+    os.getenv("DEFINITION_DB_PATH", "/app/data/definitions.db"),
     os.getenv("LOG_LEVEL", "INFO"),
     os.getenv("MESSAGE_DEDUPE_TTL_SECONDS", "600"),
 )
@@ -75,6 +85,28 @@ def build_text_reply(to_user: str, from_user: str, content: str) -> str:
     )
 
 
+def send_text_to_user(user_id: str, content: str) -> None:
+    if wecom_api is None:
+        raise WeComAPIError("wecom api is not configured")
+    wecom_api.send_text_message(user_id, content)
+
+
+def format_definition_confirmation(definition: ReminderDefinition) -> str:
+    if definition.schedule_type == "interval":
+        schedule_text = f"每隔 {definition.interval_seconds // 60} 分钟"
+    else:
+        dt = datetime.fromtimestamp(definition.next_run_ts, ZoneInfo(definition.timezone))
+        schedule_text = dt.strftime("%Y-%m-%d %H:%M")
+    return (
+        f"已创建提醒任务\n"
+        f"ID: {definition.definition_id[:8]}\n"
+        f"标题: {definition.title}\n"
+        f"目标用户: {definition.target_user_id}\n"
+        f"时间: {schedule_text}\n"
+        f"内容: {definition.message}"
+    )
+
+
 def process_text_message_async(*, from_user: str, msg_id: str, user_message: str) -> None:
     logger.info(
         "async processing start msg_id=%s from_user=%s user_message_len=%s",
@@ -82,6 +114,8 @@ def process_text_message_async(*, from_user: str, msg_id: str, user_message: str
         from_user,
         len(user_message),
     )
+    selected_skill = skill_router.select_skill(user_message)
+    logger.info("async skill routing msg_id=%s from_user=%s selected_skill=%s", msg_id, from_user, selected_skill)
     if user_message.strip() in {"/reset", "重置", "清空记忆", "清除记忆"}:
         conversation_store.clear(from_user)
         logger.info("conversation memory cleared from_user=%s msg_id=%s", from_user, msg_id)
@@ -95,7 +129,32 @@ def process_text_message_async(*, from_user: str, msg_id: str, user_message: str
             logger.exception("async wecom send failed msg_id=%s from_user=%s error=%s", msg_id, from_user, exc)
         return
 
-    if weather_skill and weather_skill.is_weather_query(user_message):
+    if definition_manager and selected_skill == "reminder-definition":
+        try:
+            reminder_draft = reminder_parser.parse(user_message, from_user)
+        except Exception as exc:
+            logger.exception("reminder parse failed msg_id=%s from_user=%s", msg_id, from_user)
+            reminder_draft = None
+        if reminder_draft:
+            definition = definition_manager.create_definition(
+                creator_user_id=from_user,
+                target_user_id=reminder_draft.target_user_id,
+                title=reminder_draft.title,
+                message=reminder_draft.message,
+                schedule_type=reminder_draft.schedule_type,
+                run_at_ts=reminder_draft.run_at_ts,
+                interval_seconds=reminder_draft.interval_seconds,
+                timezone=reminder_draft.timezone,
+                source_text=reminder_draft.source_text,
+            )
+            try:
+                send_text_to_user(from_user, format_definition_confirmation(definition))
+                logger.info("reminder definition handled msg_id=%s from_user=%s definition_id=%s", msg_id, from_user, definition.definition_id)
+            except WeComAPIError as exc:
+                logger.exception("reminder confirmation send failed msg_id=%s from_user=%s error=%s", msg_id, from_user, exc)
+            return
+
+    if weather_skill and selected_skill == "weather-zh":
         try:
             agent_reply = weather_skill.query(user_message)
             logger.info("weather skill handled msg_id=%s from_user=%s", msg_id, from_user)
@@ -167,10 +226,27 @@ def healthz() -> dict[str, str]:
         "status": "ok",
         "agent_configured": "true" if agent else "false",
         "wecom_api_configured": "true" if wecom_api else "false",
+        "definition_manager_configured": "true" if definition_manager else "false",
         "weather_skill_configured": "true" if weather_skill else "false",
         "memory_enabled": "true" if memory_enabled else "false",
         "identity_dir": os.getenv("IDENTITY_DIR", "/app/identities"),
     }
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    global definition_manager
+    if wecom_api is None:
+        logger.warning("skip definition manager startup because wecom api is not configured")
+        return
+    definition_manager = DefinitionManager(notify_fn=send_text_to_user)
+    definition_manager.start()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    if definition_manager:
+        definition_manager.stop()
 
 
 @app.get("/wecom/callback")

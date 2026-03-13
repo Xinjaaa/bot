@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY prompts ./prompts
 COPY skills ./skills
-RUN mkdir -p /app/identities
+RUN mkdir -p /app/identities /app/data
 
 EXPOSE 8000
 

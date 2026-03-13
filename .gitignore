@@ -7,3 +7,4 @@ __pycache__/
 *.pyd
 .pytest_cache/
 identities/
+data/
