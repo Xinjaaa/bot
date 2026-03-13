@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "weather-cn": {
+      "name": "中国城市天气Weather in China",
+      "zip_url": "https://lightmake.site/api/v1/download?slug=weather-cn",
+      "source": "skillhub",
+      "version": "1.0.1"
+    }
+  }
+}

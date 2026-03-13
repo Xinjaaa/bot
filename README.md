@@ -11,6 +11,7 @@
 - 基于 `MsgId` 的短期去重，避免企业微信重试造成重复回复
 - 通过 Markdown 文件管理系统提示词
 - 为每个企业微信用户自动维护一个 `<User>-Identity.md` 身份档案
+- 集成开源 `weather-cn` skill，可根据问题直接查询中国城市天气
 
 ## 项目结构
 
@@ -21,7 +22,10 @@ app/
   dedupe.py        短期消息去重
   identity.py      用户身份档案读写与提取
   main.py          FastAPI 入口
+  weather_skill.py 天气 skill 适配层
 identities/        自动生成的用户身份档案
+skills/
+  weather-cn/      开源天气 skill 资源
   wecom_api.py     企业微信 access_token 和主动发消息接口
 prompts/
   system_prompt.md 系统提示词
@@ -36,8 +40,9 @@ scripts/
 3. 解析消息内容并用 `MsgId` 去重
 4. 立即返回 `success`，避免企业微信回调超时
 5. 更新用户身份档案与会话记忆
-6. 后台异步调用模型生成回复
-7. 调用企业微信 `message/send` 主动把回复发给用户
+6. 如果命中天气问题，直接调用本地天气 skill
+7. 否则异步调用模型生成回复
+8. 调用企业微信 `message/send` 主动把回复发给用户
 
 ## 环境变量
 
@@ -76,6 +81,12 @@ scripts/
 ### 用户身份档案配置
 
 - `IDENTITY_DIR`: 用户身份档案目录，默认 `/app/identities`
+
+### 天气 Skill 配置
+
+- `WEATHER_SKILL_DIR`: 天气 skill 目录，默认 `/app/skills/weather-cn`
+- `WEATHER_DEFAULT_CITY`: 未识别到城市时的默认城市，默认 `北京`
+- `WEATHER_SKILL_TIMEOUT_SECONDS`: 天气脚本执行超时，默认 `12`
 
 ### 日志
 
@@ -174,7 +185,7 @@ curl http://127.0.0.1:8000/healthz
 示例返回：
 
 ```json
-{"status":"ok","agent_configured":"true","wecom_api_configured":"true"}
+{"status":"ok","agent_configured":"true","wecom_api_configured":"true","weather_skill_configured":"true"}
 ```
 
 ## 注意事项
@@ -187,3 +198,4 @@ curl http://127.0.0.1:8000/healthz
 - 发送 `重置`、`清空记忆`、`清除记忆` 或 `/reset` 可以清掉当前用户的会话记忆。
 - 身份档案只保存“用户明确自述”的事实，例如姓名、公司、职位、城市、学校；模糊推断不会写入档案。
 - 每个用户会生成一个 `identities/<User>-Identity.md` 文件，并在回复时作为身份上下文注入给模型。
+- 天气问题会优先走 `skills/weather-cn/weather-cn.sh`，不消耗大模型调用。

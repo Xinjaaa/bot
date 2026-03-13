@@ -10,6 +10,7 @@ from app.crypto import WeComCrypto, WeComCryptoError
 from app.dedupe import TTLMessageDeduper
 from app.identity import UserIdentityStore
 from app.memory import InMemoryConversationStore
+from app.weather_skill import WeatherSkill, WeatherSkillError, is_weather_skill_configured
 from app.wecom_api import WeComAPIClient, WeComAPIError, is_wecom_api_configured
 
 
@@ -42,14 +43,16 @@ conversation_store = InMemoryConversationStore(
     ttl_seconds=int(os.getenv("MEMORY_TTL_SECONDS", "1800")),
 )
 identity_store = UserIdentityStore()
+weather_skill: WeatherSkill | None = WeatherSkill() if is_weather_skill_configured() else None
 
 app = FastAPI(title="WeCom Callback Service")
 
 logger.info(
-    "service startup corp_id=%s agent_configured=%s wecom_api_configured=%s memory_enabled=%s memory_max_turns=%s memory_ttl_seconds=%s identity_dir=%s log_level=%s dedupe_ttl_seconds=%s",
+    "service startup corp_id=%s agent_configured=%s wecom_api_configured=%s weather_skill_configured=%s memory_enabled=%s memory_max_turns=%s memory_ttl_seconds=%s identity_dir=%s log_level=%s dedupe_ttl_seconds=%s",
     CORP_ID,
     bool(agent),
     bool(wecom_api),
+    bool(weather_skill),
     memory_enabled,
     os.getenv("MEMORY_MAX_TURNS", "6"),
     os.getenv("MEMORY_TTL_SECONDS", "1800"),
@@ -83,6 +86,22 @@ def process_text_message_async(*, from_user: str, msg_id: str, user_message: str
         conversation_store.clear(from_user)
         logger.info("conversation memory cleared from_user=%s msg_id=%s", from_user, msg_id)
         agent_reply = "已清空当前会话记忆。"
+        try:
+            if wecom_api is None:
+                raise WeComAPIError("wecom api is not configured")
+            result = wecom_api.send_text_message(from_user, agent_reply)
+            logger.info("async wecom send success msg_id=%s from_user=%s result=%s", msg_id, from_user, result)
+        except WeComAPIError as exc:
+            logger.exception("async wecom send failed msg_id=%s from_user=%s error=%s", msg_id, from_user, exc)
+        return
+
+    if weather_skill and weather_skill.is_weather_query(user_message):
+        try:
+            agent_reply = weather_skill.query(user_message)
+            logger.info("weather skill handled msg_id=%s from_user=%s", msg_id, from_user)
+        except WeatherSkillError as exc:
+            logger.warning("weather skill failed msg_id=%s from_user=%s error=%s", msg_id, from_user, exc)
+            agent_reply = "天气查询暂时不可用，请稍后再试。"
         try:
             if wecom_api is None:
                 raise WeComAPIError("wecom api is not configured")
@@ -148,6 +167,7 @@ def healthz() -> dict[str, str]:
         "status": "ok",
         "agent_configured": "true" if agent else "false",
         "wecom_api_configured": "true" if wecom_api else "false",
+        "weather_skill_configured": "true" if weather_skill else "false",
         "memory_enabled": "true" if memory_enabled else "false",
         "identity_dir": os.getenv("IDENTITY_DIR", "/app/identities"),
     }
