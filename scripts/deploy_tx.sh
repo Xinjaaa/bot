@@ -5,18 +5,21 @@ REMOTE_HOST="${REMOTE_HOST:-tx}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/wecom-callback}"
 IMAGE_NAME="${IMAGE_NAME:-wecom-callback:latest}"
 
-if [[ ! -f ".env" ]]; then
-  echo ".env not found. Copy .env.example to .env and fill in real values first." >&2
-  exit 1
-fi
-
 ssh "${REMOTE_HOST}" "mkdir -p ${REMOTE_DIR}"
 ssh "${REMOTE_HOST}" "mkdir -p ${REMOTE_DIR}/identities"
 ssh "${REMOTE_HOST}" "mkdir -p ${REMOTE_DIR}/data"
-scp Dockerfile requirements.txt .env "${REMOTE_HOST}:${REMOTE_DIR}/"
+scp Dockerfile requirements.txt "${REMOTE_HOST}:${REMOTE_DIR}/"
 scp -r app "${REMOTE_HOST}:${REMOTE_DIR}/"
 scp -r prompts "${REMOTE_HOST}:${REMOTE_DIR}/"
 scp -r skills "${REMOTE_HOST}:${REMOTE_DIR}/"
+
+ssh "${REMOTE_HOST}" "
+  set -euo pipefail
+  if [[ ! -f ${REMOTE_DIR}/.env ]]; then
+    echo 'remote .env not found, please create it on the server first.' >&2
+    exit 1
+  fi
+"
 
 ssh "${REMOTE_HOST}" "
   set -euo pipefail
