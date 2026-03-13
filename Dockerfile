@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY prompts ./prompts
+RUN mkdir -p /app/identities
 
 EXPOSE 8000
 

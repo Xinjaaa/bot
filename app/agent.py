@@ -4,6 +4,8 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from app.memory import ConversationTurn
+
 
 logger = logging.getLogger("wecom-agent")
 
@@ -68,19 +70,52 @@ class OpenAIAgent:
             logger.warning("system prompt file not found path=%s, fallback to default prompt", prompt_path)
         return DEFAULT_SYSTEM_PROMPT
 
-    def reply(self, user_message: str, user_id: str | None = None) -> str:
+    @staticmethod
+    def _build_input(user_message: str, history: list[ConversationTurn] | None = None) -> str:
+        if not history:
+            return user_message
+
+        history_lines = []
+        for turn in history:
+            role_label = "用户" if turn.role == "user" else "助手"
+            history_lines.append(f"{role_label}: {turn.content}")
+        history_block = "\n".join(history_lines)
+        return (
+            "以下是最近对话上下文，请结合上下文回答最新问题。\n\n"
+            f"{history_block}\n\n"
+            f"用户: {user_message}\n"
+            "助手:"
+        )
+
+    def reply(
+        self,
+        user_message: str,
+        user_id: str | None = None,
+        history: list[ConversationTurn] | None = None,
+        identity_markdown: str | None = None,
+    ) -> str:
+        request_input = self._build_input(user_message, history)
+        if identity_markdown:
+            request_input = (
+                "以下是当前用户的身份档案，请仅将其中明确记录的事实作为用户身份背景使用。\n\n"
+                f"{identity_markdown}\n\n"
+                "以下是本次对话输入。\n\n"
+                f"{request_input}"
+            )
         logger.info(
-            "agent request start user_id=%s model=%s user_message_len=%s user_message_preview=%r",
+            "agent request start user_id=%s model=%s user_message_len=%s history_turns=%s identity_len=%s user_message_preview=%r",
             user_id or "unknown",
             self.model,
             len(user_message),
+            len(history or []),
+            len(identity_markdown or ""),
             user_message[:200],
         )
         try:
             response = self.client.responses.create(
                 model=self.model,
                 instructions=self.system_prompt,
-                input=user_message,
+                input=request_input,
             )
         except Exception as exc:
             logger.exception("agent request failed")

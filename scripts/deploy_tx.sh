@@ -11,8 +11,10 @@ if [[ ! -f ".env" ]]; then
 fi
 
 ssh "${REMOTE_HOST}" "mkdir -p ${REMOTE_DIR}"
+ssh "${REMOTE_HOST}" "mkdir -p ${REMOTE_DIR}/identities"
 scp Dockerfile requirements.txt .env "${REMOTE_HOST}:${REMOTE_DIR}/"
 scp -r app "${REMOTE_HOST}:${REMOTE_DIR}/"
+scp -r prompts "${REMOTE_HOST}:${REMOTE_DIR}/"
 
 ssh "${REMOTE_HOST}" "
   set -euo pipefail
@@ -23,6 +25,7 @@ ssh "${REMOTE_HOST}" "
     --name wecom-callback \
     --restart unless-stopped \
     --env-file .env \
+    -v ${REMOTE_DIR}/identities:/app/identities \
     -p 8000:8000 \
     ${IMAGE_NAME}
   docker ps --filter name=wecom-callback

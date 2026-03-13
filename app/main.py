@@ -8,6 +8,8 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Res
 from app.agent import AgentError, OpenAIAgent, is_agent_configured
 from app.crypto import WeComCrypto, WeComCryptoError
 from app.dedupe import TTLMessageDeduper
+from app.identity import UserIdentityStore
+from app.memory import InMemoryConversationStore
 from app.wecom_api import WeComAPIClient, WeComAPIError, is_wecom_api_configured
 
 
@@ -34,14 +36,24 @@ crypto = WeComCrypto(
 agent: OpenAIAgent | None = OpenAIAgent() if is_agent_configured() else None
 wecom_api: WeComAPIClient | None = WeComAPIClient() if is_wecom_api_configured() else None
 message_deduper = TTLMessageDeduper(ttl_seconds=int(os.getenv("MESSAGE_DEDUPE_TTL_SECONDS", "600")))
+memory_enabled = os.getenv("MEMORY_ENABLED", "true").lower() == "true"
+conversation_store = InMemoryConversationStore(
+    max_turns=int(os.getenv("MEMORY_MAX_TURNS", "6")),
+    ttl_seconds=int(os.getenv("MEMORY_TTL_SECONDS", "1800")),
+)
+identity_store = UserIdentityStore()
 
 app = FastAPI(title="WeCom Callback Service")
 
 logger.info(
-    "service startup corp_id=%s agent_configured=%s wecom_api_configured=%s log_level=%s dedupe_ttl_seconds=%s",
+    "service startup corp_id=%s agent_configured=%s wecom_api_configured=%s memory_enabled=%s memory_max_turns=%s memory_ttl_seconds=%s identity_dir=%s log_level=%s dedupe_ttl_seconds=%s",
     CORP_ID,
     bool(agent),
     bool(wecom_api),
+    memory_enabled,
+    os.getenv("MEMORY_MAX_TURNS", "6"),
+    os.getenv("MEMORY_TTL_SECONDS", "1800"),
+    os.getenv("IDENTITY_DIR", "/app/identities"),
     os.getenv("LOG_LEVEL", "INFO"),
     os.getenv("MESSAGE_DEDUPE_TTL_SECONDS", "600"),
 )
@@ -67,10 +79,40 @@ def process_text_message_async(*, from_user: str, msg_id: str, user_message: str
         from_user,
         len(user_message),
     )
+    if user_message.strip() in {"/reset", "重置", "清空记忆", "清除记忆"}:
+        conversation_store.clear(from_user)
+        logger.info("conversation memory cleared from_user=%s msg_id=%s", from_user, msg_id)
+        agent_reply = "已清空当前会话记忆。"
+        try:
+            if wecom_api is None:
+                raise WeComAPIError("wecom api is not configured")
+            result = wecom_api.send_text_message(from_user, agent_reply)
+            logger.info("async wecom send success msg_id=%s from_user=%s result=%s", msg_id, from_user, result)
+        except WeComAPIError as exc:
+            logger.exception("async wecom send failed msg_id=%s from_user=%s error=%s", msg_id, from_user, exc)
+        return
+
+    history = conversation_store.get_turns(from_user) if memory_enabled else []
+    identity_path = identity_store.ensure_file(from_user)
+    updated_facts = identity_store.update_from_message(from_user, user_message)
+    identity_markdown = identity_store.load_markdown(from_user)
+    logger.info(
+        "loaded conversation memory from_user=%s msg_id=%s history_turns=%s identity_file=%s updated_identity_facts=%s",
+        from_user,
+        msg_id,
+        len(history),
+        identity_path,
+        [f"{fact.label}={fact.value}" for fact in updated_facts],
+    )
     try:
         if agent is None:
             raise AgentError("agent is not configured")
-        agent_reply = agent.reply(user_message=user_message, user_id=from_user)
+        agent_reply = agent.reply(
+            user_message=user_message,
+            user_id=from_user,
+            history=history,
+            identity_markdown=identity_markdown,
+        )
         logger.info(
             "async agent reply ready msg_id=%s from_user=%s reply_len=%s reply_preview=%r",
             msg_id,
@@ -78,6 +120,15 @@ def process_text_message_async(*, from_user: str, msg_id: str, user_message: str
             len(agent_reply),
             agent_reply[:300],
         )
+        if memory_enabled:
+            conversation_store.append_turn(from_user, "user", user_message)
+            conversation_store.append_turn(from_user, "assistant", agent_reply)
+            logger.info(
+                "conversation memory updated from_user=%s msg_id=%s stored_turns=%s",
+                from_user,
+                msg_id,
+                len(conversation_store.get_turns(from_user)),
+            )
     except AgentError as exc:
         logger.warning("async agent failed msg_id=%s from_user=%s error=%s", msg_id, from_user, exc)
         agent_reply = "暂时无法处理你的消息，请稍后再试。"
@@ -97,6 +148,8 @@ def healthz() -> dict[str, str]:
         "status": "ok",
         "agent_configured": "true" if agent else "false",
         "wecom_api_configured": "true" if wecom_api else "false",
+        "memory_enabled": "true" if memory_enabled else "false",
+        "identity_dir": os.getenv("IDENTITY_DIR", "/app/identities"),
     }
 
 
