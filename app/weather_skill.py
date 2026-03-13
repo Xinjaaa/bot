@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from app.openai_compat import request_text
+
 
 logger = logging.getLogger("wecom-weather")
 
@@ -173,12 +175,13 @@ class WeatherSkill:
             f"常见城市列表: {json.dumps(self.cities[:200], ensure_ascii=False)}\n"
             f"用户消息: {message}\n"
         )
-        response = self._client.responses.create(
+        text = request_text(
+            self._client,
             model=self.model,
             instructions=instructions,
-            input=payload,
+            input_text=payload,
         )
-        text = (response.output_text or "").strip()
+        text = text.strip()
         if not text:
             return None
         data = json.loads(text)

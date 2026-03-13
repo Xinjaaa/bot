@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.openai_compat import request_text
+
 logger = logging.getLogger("reminder-parser")
 
 
@@ -115,15 +117,16 @@ class ReminderDefinitionParser:
             f"用户消息: {message}\n"
         )
         try:
-            response = self._client.responses.create(
+            text = request_text(
+                self._client,
                 model=self.model,
                 instructions=instructions,
-                input=payload,
+                input_text=payload,
             )
         except Exception as exc:
             logger.exception("reminder parser model request failed")
             raise ReminderParseError(str(exc)) from exc
-        text = (response.output_text or "").strip()
+        text = text.strip()
         if not text or text == "null":
             return None
         try:

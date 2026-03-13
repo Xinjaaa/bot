@@ -5,6 +5,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from app.memory import ConversationTurn
+from app.openai_compat import request_text
 
 
 logger = logging.getLogger("wecom-agent")
@@ -112,25 +113,24 @@ class OpenAIAgent:
             user_message[:200],
         )
         try:
-            response = self.client.responses.create(
+            text = request_text(
+                self.client,
                 model=self.model,
                 instructions=self.system_prompt,
-                input=request_input,
+                input_text=request_input,
             )
         except Exception as exc:
             logger.exception("agent request failed")
             raise AgentError(str(exc)) from exc
 
-        text = (response.output_text or "").strip()
         if not text:
-            logger.warning("agent response empty user_id=%s raw_response=%s", user_id or "unknown", response)
+            logger.warning("agent response empty user_id=%s", user_id or "unknown")
             raise AgentError("empty model response")
         logger.info(
-            "agent request success user_id=%s reply_len=%s reply_preview=%r response_id=%s",
+            "agent request success user_id=%s reply_len=%s reply_preview=%r",
             user_id or "unknown",
             len(text),
             text[:200],
-            getattr(response, "id", None),
         )
         return text
 

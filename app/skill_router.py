@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.openai_compat import request_text
+
 
 logger = logging.getLogger("skill-router")
 
@@ -51,15 +53,15 @@ class SkillRouter:
             f"用户消息:\n{message}"
         )
         try:
-            response = self._client.responses.create(
+            output = request_text(
+                self._client,
                 model=self.model,
                 instructions=instructions,
-                input=input_text,
+                input_text=input_text,
             )
         except Exception:
             logger.exception("skill router request failed")
             return None
-        output = (response.output_text or "").strip()
         try:
             data = json.loads(output)
         except json.JSONDecodeError:
