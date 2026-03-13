@@ -18,8 +18,8 @@ class ImageAnalyzerError(Exception):
 class ImageAnalyzer:
     def __init__(self) -> None:
         base_url = self._get_required_env("OPENAI_BASE_URL")
-        api_key = self._get_required_env("OPENAI_API_KEY")
-        self.model = self._get_required_env("OPENAI_MODEL")
+        api_key = self._get_env_with_fallback("OPENAI_VISION_API_KEY", "OPENAI_API_KEY")
+        self.model = self._get_env_with_fallback("OPENAI_VISION_MODEL", "OPENAI_MODEL")
         self.timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "20"))
         self.download_timeout = float(os.getenv("IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "15"))
         try:
@@ -32,11 +32,12 @@ class ImageAnalyzer:
             timeout=self.timeout,
         )
         logger.info(
-            "image analyzer initialized base_url=%s model=%s timeout=%s download_timeout=%s",
+            "image analyzer initialized base_url=%s model=%s timeout=%s download_timeout=%s uses_dedicated_vision_config=%s",
             base_url,
             self.model,
             self.timeout,
             self.download_timeout,
+            bool(os.getenv("OPENAI_VISION_API_KEY") and os.getenv("OPENAI_VISION_MODEL")),
         )
 
     @staticmethod
@@ -45,6 +46,13 @@ class ImageAnalyzer:
         if not value:
             raise RuntimeError(f"missing required environment variable: {name}")
         return value
+
+    @classmethod
+    def _get_env_with_fallback(cls, primary_name: str, fallback_name: str) -> str:
+        primary_value = os.getenv(primary_name)
+        if primary_value:
+            return primary_value
+        return cls._get_required_env(fallback_name)
 
     def describe(self, image_url: str) -> str:
         prompt = (
@@ -87,5 +95,8 @@ class ImageAnalyzer:
 
 
 def is_image_analyzer_configured() -> bool:
-    required_envs = ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")
-    return all(os.getenv(name) for name in required_envs)
+    if not os.getenv("OPENAI_BASE_URL"):
+        return False
+    has_vision_pair = bool(os.getenv("OPENAI_VISION_API_KEY") and os.getenv("OPENAI_VISION_MODEL"))
+    has_default_pair = bool(os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_MODEL"))
+    return has_vision_pair or has_default_pair
